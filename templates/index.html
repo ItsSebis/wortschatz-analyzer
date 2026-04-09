@@ -303,11 +303,12 @@ async function deleteDB() {
 async function importYT() {
     let url = document.getElementById("ytUrl").value;
     let mode = "limit"
+    let selectedDB = document.getElementById("dbSelect").value
 
     let res = await fetch("/admin/youtube_import", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ url,mode, })
+        body: JSON.stringify({ url:url,mode:mode,db:selectedDB })
     });
     let data = await res.json();
     if (data.status != "started") {

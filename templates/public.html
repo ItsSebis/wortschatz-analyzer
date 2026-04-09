@@ -57,10 +57,11 @@ async function loadOverview() {
 
     data.forEach(d => {
         div.innerHTML += `
-            <label>
+            <div  class="card"><label>
                 <input type="checkbox" value="${d.db}" checked>
-                ${d.db} (${d.files} Dateien)
-            </label><br>
+                ${d.db} (${d.files} Dateien) <br>
+                <p>Gesamt: ${d.total_words} Wörter | Einzeln: ${d.unique_words} Wörter</p>
+            </label></div>
         `;
     });
 

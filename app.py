@@ -80,8 +80,13 @@ def process_text(text):
     counts = Counter(normalized)
     return counts, len(words), len(counts), mtld
 
-def save_to_db(file_hash, filename, counts, total, unique, mtld):
-    conn = get_db()
+def save_to_db(file_hash, filename, counts, total, unique, mtld, db=CURRENT_DB):
+    conn = mysql.connector.connect(
+        host=DB_CONFIG["host"],
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"],
+        database=db
+    )
     cursor = conn.cursor()
 
     cursor.execute("""
@@ -112,7 +117,7 @@ def save_to_db(file_hash, filename, counts, total, unique, mtld):
     cursor.close()
     conn.close()
 
-def process_file(filepath):
+def process_file(filepath, db=CURRENT_DB):
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
 
@@ -120,7 +125,7 @@ def process_file(filepath):
     file_hash = hash_file(filepath)
     filename = os.path.basename(filepath)
 
-    save_to_db(file_hash, filename, counts, total, unique, mtld)
+    save_to_db(file_hash, filename, counts, total, unique, mtld, db)
 
 def init_db_schema(db_name):
     conn = mysql.connector.connect(
@@ -253,7 +258,7 @@ def transcribe(file):
 
     result = []
     for i, seg in enumerate(segments):
-        app.logger.info(f"[{i}] {seg.start:.2f}s -> {seg.end:.2f}s")
+        #app.logger.info(f"[{i}] {seg.start:.2f}s -> {seg.end:.2f}s")
         result.append(seg.text)
 
     return " ".join(result)
@@ -262,8 +267,8 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text)
     return text.strip()
 
-def import_youtube(url, mode="all"):
-    app.logger.info(f"YouTube import {url} with mode {mode}")
+def import_youtube(url, mode="all", db=CURRENT_DB):
+    app.logger.info(f"Start YouTube import {url} with mode {mode}")
 
     video_ids = []
     if mode == "latest":
@@ -279,26 +284,24 @@ def import_youtube(url, mode="all"):
 
         try:
             audio = download_audio(vid)
-            app.logger.info('Started transcribe')
             text = transcribe(audio)
-            app.logger.info('Ended transcribe')
             text = clean_text(text)
             path = UPLOAD_FOLDER+"/"+meta["channel"] + " - " + meta["title"] +".txt"
-            app.logger.info('Saving to file '+path)
 
             with open(path, "w", encoding="utf-8") as f:
                 f.write(text)
                 f.close()
 
-            app.logger.info('Processing file...')
-            process_file(path)
-            app.logger.info('Processed file.')
+            process_file(path, db)
 
             # Speicher sparen
             os.remove(audio)
 
         except Exception as e:
             print(f"Error with {vid}:", e)
+
+        app.logger.info("Finished " + meta["title"])
+    IMPORT_RUNNING -= 1
 
 # === ROUTES ===
 
@@ -680,21 +683,22 @@ def list_db():
         "databases": dbs
     })
 
-IMPORT_RUNNING = False
+IMPORT_RUNNING = 0
 
 @app.route("/admin/youtube_import", methods=["POST"])
 def youtube_import():
     global IMPORT_RUNNING
 
-    if IMPORT_RUNNING:
+    if IMPORT_RUNNING > 3:
         return {"error": "import already running"}, 400
 
-    IMPORT_RUNNING = True
+    IMPORT_RUNNING += 1
 
     url = request.json.get("url")
     mode = request.json.get("mode", "all")
+    db = request.json.get("db", CURRENT_DB)
 
-    t = threading.Thread(target=import_youtube, args=(url,mode,))
+    t = threading.Thread(target=import_youtube, args=(url,mode,db,))
     t.start()
 
     return {"status": "started"}
@@ -766,7 +770,6 @@ def public_ui():
 
 @app.route("/public/overview")
 def public_overview():
-
     conn = mysql.connector.connect(
         host=DB_CONFIG["host"],
         user=DB_CONFIG["user"],
@@ -779,24 +782,32 @@ def public_overview():
 
     result = []
 
-    print("test")
-
-    #selected_dbs = request.json.get("dbs", Array.array(dbs))
-
-    print("test")
-
     for db in dbs:
         try:
             c = mysql.connector.connect(**{**DB_CONFIG, "database": db})
             cur = c.cursor()
 
-            cur.execute("SELECT COUNT(*), SUM(total_words) FROM files")
-            count, total = cur.fetchone()
+            # 🔹 total words + file count
+            cur.execute("""
+                SELECT 
+                    COUNT(*),
+                    SUM(total_words)
+                FROM files
+            """)
+            file_count, total_words = cur.fetchone()
+
+            # 🔹 echte unique words über gesamte DB
+            cur.execute("""
+                SELECT COUNT(DISTINCT word)
+                FROM words
+            """)
+            unique_words = cur.fetchone()[0]
 
             result.append({
                 "db": db,
-                "files": count or 0,
-                "words": total or 0
+                "files": file_count or 0,
+                "total_words": int(total_words or 0),
+                "unique_words": int(unique_words or 0)
             })
 
             cur.close()
