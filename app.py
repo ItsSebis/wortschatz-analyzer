@@ -529,4 +529,4 @@ def list_db():
 # === START ===
 if __name__ == "__main__":
     init_db_schema(CURRENT_DB)
-    app.run(debug=True)
+    app.run
