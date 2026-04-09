@@ -4,3 +4,7 @@ lexical-diversity
 nltk
 setuptools==81.0.0
 gunicorn
+yt-dlp
+faster-whisper
+ffprobe
+ffmpeg

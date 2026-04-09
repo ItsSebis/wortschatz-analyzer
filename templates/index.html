@@ -33,6 +33,9 @@
 
 <h3>Global Stats</h3>
 <div id="stats"></div>
+<h3>YouTube Import</h3>
+<input id="ytUrl" placeholder="Channel / Video URL">
+<button onclick="importYT()">Start</button>
 
 <h3>Upload</h3>
 <div id="dropzone">Dateien hier reinziehen</div>
@@ -77,6 +80,15 @@ Oneclick results <a style="color:red;" href="#" onclick="document.getElementById
 </table>
 
 <script>
+let charts = {};
+
+function createChart(id, config) {
+    if (charts[id]) {
+        charts[id].destroy();
+    }
+    charts[id] = new Chart(document.getElementById(id), config);
+}
+
 async function loadStats() {
     let res = await fetch("/stats");
     let data = await res.json();
@@ -185,7 +197,7 @@ async function loadFilesChart() {
     const total = data.map(d => d.total_words);
     const unique = data.map(d => d.unique_words);
 
-    new Chart(document.getElementById("filesChart"), {
+    createChart("filesChart", {
         type: "bar",
         data: {
             labels,
@@ -204,7 +216,7 @@ async function loadTFIDF(filename) {
     const labels = data.map(d => d.word);
     const scores = data.map(d => d.score);
 
-    new Chart(document.getElementById("tfidfChart"), {
+    createChart("tfidfChart", {
         type: "bar",
         data: {
             labels,
@@ -223,7 +235,7 @@ async function loadWordLength(filename) {
     const labels = data.map(d => d[0]);
     const values = data.map(d => d[1]);
 
-    new Chart(document.getElementById("lengthChart"), {
+    createChart("lengthChart", {
         type: "bar",
         data: {
             labels,
@@ -286,6 +298,24 @@ async function deleteDB() {
     });
 
     loadDBs();
+}
+
+async function importYT() {
+    let url = document.getElementById("ytUrl").value;
+    let mode = "limit"
+
+    let res = await fetch("/admin/youtube_import", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ url,mode, })
+    });
+    let data = await res.json();
+    if (data.status != "started") {
+        alert("Import error!");
+        return;
+    }
+
+    alert("Import läuft");
 }
 
 // initial load

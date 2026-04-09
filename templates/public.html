@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Podcast Analytics</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { font-family: Arial; padding: 40px; }
+        .card { border:1px solid #ccc; padding:20px; margin:10px; }
+    </style>
+</head>
+<body>
+
+<h1>📊 Podcast Analytics</h1>
+
+<h2>Datenbanken auswählen</h2>
+<div id="dbSelector"></div>
+
+<button onclick="applySelection()">Auswahl übernehmen</button>
+
+<h2>Vergleich</h2>
+<canvas id="compareChart"></canvas>
+
+<h2>Kategorien</h2>
+<canvas id="catChart"></canvas>
+
+<h2>DNA Chart</h2>
+<select class="dbSelect" id="dbSelect"></select>
+<button onclick="loadDNA(document.getElementById('dbSelect').value)">Vergleichen</button><br>
+<canvas id="dnaChart"></canvas>
+
+<h2>TF-IDF (Top Begriffe)</h2>
+<select class="dbSelect" id="tfidfDb"></select>
+<button onclick="loadTFIDF()">Laden</button>
+<table id="tfidfTable"></table>
+
+<h2>TF-IDF Vergleich zwischen DBs</h2>
+<div id="tfidfCross"></div>
+
+<script>
+let charts = {};
+
+function createChart(id, config) {
+    if (charts[id]) {
+        charts[id].destroy();
+    }
+    charts[id] = new Chart(document.getElementById(id), config);
+}
+
+let selectedDBs = [];
+
+async function loadOverview() {
+    let res = await fetch("/public/overview");
+    let data = await res.json();
+
+    let div = document.getElementById("dbSelector");
+    div.innerHTML = "";
+
+    data.forEach(d => {
+        div.innerHTML += `
+            <label>
+                <input type="checkbox" value="${d.db}" checked>
+                ${d.db} (${d.files} Dateien)
+            </label><br>
+        `;
+    });
+
+    let selects = document.getElementsByClassName("dbSelect")
+
+    for (let select of selects) {
+        select.innerHTML = "";
+        for (let db of selectedDBs) {
+            select.innerHTML += "<option value='"+db+"'>"+db+"</option>"
+	}
+    }
+
+    // initial alle auswählen
+    selectedDBs = data.map(d => d.db);
+    loadDBStats();
+    compareCategories();
+    loadTFIDFCross();
+}
+
+function applySelection() {
+    let checkboxes = document.querySelectorAll("#dbSelector input");
+    selectedDBs = [];
+
+    checkboxes.forEach(cb => {
+        if (cb.checked) {
+            selectedDBs.push(cb.value);
+        }
+    });
+
+    // Charts neu laden
+    loadDBStats();
+    compareCategories();
+    loadTFIDFCross();
+}
+
+async function loadDBStats() {
+    let res = await fetch("/public/db_stats", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ dbs: selectedDBs })
+    });
+    let data = await res.json();
+
+    createChart("compareChart", {
+        type: "bar",
+        data: {
+            labels: data.map(d => d.db),
+            datasets: [
+                {
+                    label: "MTLD",
+                    data: data.map(d => d.mtld),
+                    yAxisID: "y1"
+                },
+                {
+                    label: "Diversity",
+                    data: data.map(d => d.diversity),
+                    yAxisID: "y2"
+                }
+            ]
+        },
+        options: {
+            scales: {
+                y1: {
+                    type: "linear",
+                    position: "left"
+                },
+                y2: {
+                    type: "linear",
+                    position: "right",
+                    min: 0,
+                    max: 1
+                }
+            }
+        }
+    });
+}
+
+async function compareCategories() {
+    let res = await fetch("/public/db_stats", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ dbs: selectedDBs })
+    });
+
+    let dbs = await res.json()
+    console.log(dbs)
+    let datasets = [];
+    let labels = null;
+
+    for (let db of dbs) {
+        let r = await fetch(`/public/categories_db/${db.db}`);
+        let data = await r.json();
+
+        if (!labels) labels = Object.keys(data);
+
+        datasets.push({
+            label: db.db,
+            data: Object.values(data)
+        });
+    }
+
+    createChart("catChart", {
+        type: "radar",
+        data: {
+            labels,
+            datasets
+        }
+    });
+}
+
+async function loadDNA(db) {
+    let res = await fetch(`/public/dna/${db}`);
+    let data = await res.json();
+
+    createChart("dnaChart", {
+        type: "radar",
+        data: {
+            labels: Object.keys(data.categories),
+            datasets: [{
+                label: db,
+                data: Object.values(data.categories)
+            }]
+        }
+    });
+}
+
+async function loadTFIDF() {
+    let db = document.getElementById("tfidfDb").value;
+
+    let res = await fetch(`/public/tfidf_db/${db}`);
+    let data = await res.json();
+
+    let table = document.getElementById("tfidfTable");
+    table.innerHTML = "<tr><th>Wort</th><th>Score</th></tr>";
+
+    data.forEach(([word, score]) => {
+        table.innerHTML += `<tr>
+            <td>${word}</td>
+            <td>${score.toFixed(2)}</td>
+        </tr>`;
+    });
+}
+
+async function loadTFIDFCross() {
+    let res = await fetch("/public/tfidf_cross", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ dbs: selectedDBs })
+    });
+    let data = await res.json();
+
+    let div = document.getElementById("tfidfCross");
+    div.innerHTML = "";
+
+    for (let db in data) {
+        div.innerHTML += `<h3>${db}</h3><table border="1">
+            <tr><th>Wort</th><th>Score</th></tr>
+            ${data[db].map(([w, s]) => `
+                <tr><td>${w}</td><td>${s.toFixed(2)}</td></tr>
+            `).join("")}
+        </table><br>`;
+    }
+}
+
+loadOverview();
+</script>
+
+</body>
+</html>

@@ -1,20 +1,33 @@
 import os
 import re
+import math
 import hashlib
+import logging
+import threading
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 import nltk
 from nltk.stem.snowball import GermanStemmer
 from lexical_diversity import lex_div as ld
+import subprocess
+import json
+from faster_whisper import WhisperModel
+#import ffprobe
+import ffmpeg
 
 stemmer = GermanStemmer();
 
 from flask import Flask, request, render_template, jsonify
 import mysql.connector
 
+model = WhisperModel("base", compute_type="int8")
+
 app = Flask(__name__)
-UPLOAD_FOLDER = "uploads"
+UPLOAD_FOLDER = "/data/uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+DOWNLOAD_DIR = "/data/downloads/youtube"
+os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 CURRENT_DB = os.getenv("DB_NAME")
 
@@ -50,27 +63,36 @@ def hash_file(filepath):
 def normalize_word(word):
     return stemmer.stem(word)
 
+def normalize_dict(d):
+    total = sum(d.values()) or 1
+    return {k: v / total for k, v in d.items()}
+
 def process_text(text):
     text = text.lower()
+
+    flt = ld.flemmatize(text)
+    mtld = ld.mtld(flt)
+
     words = re.findall(r'\b\w+\b', text)
 
     normalized = [normalize_word(w) for w in words]
 
     counts = Counter(normalized)
-    return counts, len(words), len(counts)
+    return counts, len(words), len(counts), mtld
 
-def save_to_db(file_hash, filename, counts, total, unique):
+def save_to_db(file_hash, filename, counts, total, unique, mtld):
     conn = get_db()
     cursor = conn.cursor()
 
     cursor.execute("""
-        INSERT INTO files (file_hash, filename, total_words, unique_words)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO files (file_hash, filename, total_words, unique_words, mtld)
+        VALUES (%s, %s, %s, %s, %s)
         ON DUPLICATE KEY UPDATE
             filename = VALUES(filename),
             total_words = VALUES(total_words),
-            unique_words = VALUES(unique_words)
-    """, (file_hash, filename, total, unique))
+            unique_words = VALUES(unique_words),
+            mtld = VALUES(mtld)
+    """, (file_hash, filename, total, unique, mtld))
 
     conn.commit()
 
@@ -94,11 +116,11 @@ def process_file(filepath):
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
 
-    counts, total, unique = process_text(text)
+    counts, total, unique, mtld = process_text(text)
     file_hash = hash_file(filepath)
     filename = os.path.basename(filepath)
 
-    save_to_db(file_hash, filename, counts, total, unique)
+    save_to_db(file_hash, filename, counts, total, unique, mtld)
 
 def init_db_schema(db_name):
     conn = mysql.connector.connect(
@@ -145,6 +167,138 @@ def safe_db_name(name):
     if not re.match(r'^[a-zA-Z0-9_]+$', name):
         raise ValueError("Invalid DB name")
     return name
+
+def get_video_ids(url):
+    result = subprocess.run(
+        ["yt-dlp", "--flat-playlist", "-J", url],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(result.stdout)
+
+    # einzelnes Video fallback
+    if "entries" not in data:
+        return [data["id"]]
+
+    return [entry["id"] for entry in data["entries"] if entry]
+
+def get_videos_with_limit(url, limit=20):
+    result = subprocess.run(
+        [
+            "yt-dlp",
+            "--flat-playlist",
+            "--playlist-end", str(limit),
+            "-J",
+            url
+        ],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(result.stdout)
+
+    return [entry["id"] for entry in data.get("entries", []) if entry]
+
+def get_video_info(video_id):
+    result = subprocess.run(
+        ["yt-dlp", "-j", f"https://youtube.com/watch?v={video_id}"],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(result.stdout)
+
+    return {
+        "title": data.get("title"),
+        "channel": data.get("channel"),
+        "uploader": data.get("uploader"),
+        "upload_date": data.get("upload_date")
+    }
+
+def get_latest_video(url):
+    result = subprocess.run(
+        [
+            "yt-dlp",
+            "--flat-playlist",
+            "--playlist-end", "1",
+            "-J",
+            url
+        ],
+        capture_output=True,
+        text=True
+    )
+
+    data = json.loads(result.stdout)
+
+    entry = data["entries"][0]
+    return entry["id"]
+
+def download_audio(video_id):
+    output = f"{DOWNLOAD_DIR}/{video_id}.mp3"
+
+    subprocess.run([
+        "yt-dlp",
+        "-x",
+        "--download-archive", f"{DOWNLOAD_DIR}/archive.txt",
+        "--audio-format", "mp3",
+        "-o", f"{DOWNLOAD_DIR}/{video_id}.%(ext)s",
+        f"https://youtube.com/watch?v={video_id}"
+    ])
+
+    return output
+
+def transcribe(file):
+    segments, _ = model.transcribe(file)
+
+    result = []
+    for i, seg in enumerate(segments):
+        app.logger.info(f"[{i}] {seg.start:.2f}s -> {seg.end:.2f}s")
+        result.append(seg.text)
+
+    return " ".join(result)
+
+def clean_text(text):
+    text = re.sub(r'\s+', ' ', text)
+    return text.strip()
+
+def import_youtube(url, mode="all"):
+    print(f"YouTube import {url} with mode {mode}")
+
+    video_ids = []
+    if mode == "latest":
+        video_ids = [get_latest_video(url)]
+    elif mode == "limit":
+        video_ids = get_videos_with_limit(url, limit=50)
+    else:
+        video_ids = get_video_ids(url)
+
+    for vid in video_ids:
+        meta = get_video_info(vid)
+        app.logger.info("Processing " + meta["title"])
+
+        try:
+            audio = download_audio(vid)
+            app.logger.info('Started transcribe')
+            text = transcribe(audio)
+            app.logger.info('Ended transcribe')
+            text = clean_text(text)
+            path = UPLOAD_FOLDER+"/"+meta["channel"] + " - " + meta["title"] +".txt"
+            app.logger.info('Saving to file '+path)
+
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(text)
+                f.close()
+
+            app.logger.info('Processing file...')
+            process_file(path)
+            app.logger.info('Processed file.')
+
+            # Speicher sparen
+            os.remove(audio)
+
+        except Exception as e:
+            print(f"Error with {vid}:", e)
 
 # === ROUTES ===
 
@@ -526,7 +680,404 @@ def list_db():
         "databases": dbs
     })
 
+IMPORT_RUNNING = False
+
+@app.route("/admin/youtube_import", methods=["POST"])
+def youtube_import():
+    global IMPORT_RUNNING
+
+    if IMPORT_RUNNING:
+        return {"error": "import already running"}, 400
+
+    IMPORT_RUNNING = True
+
+    url = request.json.get("url")
+    mode = request.json.get("mode", "all")
+
+    t = threading.Thread(target=import_youtube, args=(url,mode,))
+    t.start()
+
+    return {"status": "started"}
+
+# === PUBLIC ===
+
+CATEGORIES = {
+    "politik": [
+        "regierung","politik","staat","wahl","partei","gesetz","demokratie",
+        "kanzler","minister","bundestag","eu","verfassung"
+    ],
+    "gesellschaft": [
+        "gesellschaft","menschen","kultur","sozial","gemeinschaft","leben",
+        "werte","normen","alltag","identität"
+    ],
+    "kritisch": [
+        "problem","kritik","fehler","schlecht","versagen","risiko",
+        "krise","konflikt","schwierigkeit"
+    ],
+    "humor": [
+        "witz","lustig","haha","lol","spaß","ironie","sarkasmus",
+        "witzig","lachen"
+    ],
+    "wissenschaft": [
+        "studie","analyse","daten","forschung","theorie","modell",
+        "experiment","beweis","statistik"
+    ],
+    "wirtschaft": [
+        "markt","geld","wirtschaft","unternehmen","preis","kosten",
+        "investition","profit","wachstum"
+    ],
+    "technologie": [
+        "technik","software","hardware","ai","algorithmus","internet",
+        "system","entwicklung"
+    ],
+    "emotional": [
+        "liebe","angst","wut","freude","traurig","glücklich",
+        "emotional","gefühl"
+    ],
+    "kontrovers": [
+        "umstritten","provokant","skandal","kritisch","extrem",
+        "debattiert","polarisierend"
+    ],
+
+    # 🔥 neue
+    "philosophisch": [
+        "sinn","existenz","denken","bewusstsein","realität",
+        "wahrheit","ethik","moral"
+    ],
+    "persönlich": [
+        "mir","mein","erfahrung","leben","fühle",
+        "denke","glaube"
+    ],
+    "erzählend": [
+        "geschichte","erzählen","damals","passiert",
+        "erlebnis","story"
+    ],
+    "argumentativ": [
+        "argument","begründung","deshalb","weil",
+        "logisch","schlussfolgerung"
+    ]
+}
+
+# === PUBLIC ROUTES ===
+
+@app.route("/public")
+def public_ui():
+    return render_template("public.html")
+
+@app.route("/public/overview")
+def public_overview():
+
+    conn = mysql.connector.connect(
+        host=DB_CONFIG["host"],
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"]
+    )
+    cursor = conn.cursor()
+
+    cursor.execute("SHOW DATABASES")
+    dbs = [d[0] for d in cursor.fetchall() if d[0] not in DB_BLACKLIST]
+
+    result = []
+
+    print("test")
+
+    #selected_dbs = request.json.get("dbs", Array.array(dbs))
+
+    print("test")
+
+    for db in dbs:
+        try:
+            c = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+            cur = c.cursor()
+
+            cur.execute("SELECT COUNT(*), SUM(total_words) FROM files")
+            count, total = cur.fetchone()
+
+            result.append({
+                "db": db,
+                "files": count or 0,
+                "words": total or 0
+            })
+
+            cur.close()
+            c.close()
+        except:
+            continue
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(result)
+
+@app.route("/public/compare/<db>")
+def compare(db):
+    conn = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+    cursor = conn.cursor(dictionary=True)
+
+    cursor.execute("""
+        SELECT filename, total_words, unique_words
+        FROM files
+    """)
+
+    data = cursor.fetchall()
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(data)
+
+@app.route("/public/categories/<db>/<filename>")
+def categories(db, filename):
+    conn = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT word, count
+        FROM words w
+        JOIN files f ON w.file_id = f.id
+        WHERE f.filename = %s
+    """, (filename,))
+
+    words = cursor.fetchall()
+
+    scores = {k: 0 for k in CATEGORIES}
+
+    for word, count in words:
+        for cat, keywords in CATEGORIES.items():
+            if word in keywords:
+                scores[cat] += count
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(scores)
+
+@app.route("/public/db_stats", methods=["POST"])
+def db_stats():
+    selected_dbs = request.json.get("dbs", [])
+
+    if not selected_dbs:
+        return jsonify([])
+
+    conn = mysql.connector.connect(
+        host=DB_CONFIG["host"],
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"]
+    )
+    cursor = conn.cursor()
+
+    cursor.execute("SHOW DATABASES")
+    dbs = [d[0] for d in cursor.fetchall() if d[0] not in DB_BLACKLIST]
+
+    results = []
+
+    for db in selected_dbs:
+        try:
+            c = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+            cur = c.cursor()
+
+            cur.execute("""
+                SELECT 
+                    AVG(mtld),
+                    AVG(unique_words / total_words),
+                    AVG(total_words),
+                    COUNT(*)
+                FROM files
+            """)
+
+            mtld, diversity, avg_len, count = cur.fetchone()
+
+            results.append({
+                "db": db,
+                "mtld": float(mtld or 0),
+                "diversity": float(diversity or 0),
+                "avg_words": float(avg_len or 0),
+                "files": count
+            })
+
+            cur.close()
+            c.close()
+        except:
+            continue
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(results)
+
+@app.route("/public/categories_db/<db>")
+def categories_db(db):
+    conn = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT word, SUM(count)
+        FROM words
+        GROUP BY word
+    """)
+
+    words = cursor.fetchall()
+
+    scores = {k: 0 for k in CATEGORIES}
+
+    for word, count in words:
+        for cat, keywords in CATEGORIES.items():
+            if word in keywords:
+                scores[cat] += count
+
+    cursor.close()
+    conn.close()
+
+    scores = normalize_dict(scores)
+
+    return jsonify(scores)
+
+@app.route("/public/tfidf_db/<db>")
+def tfidf_db(db):
+    import math
+
+    conn = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT COUNT(*) FROM files")
+    total_docs = cursor.fetchone()[0]
+
+    cursor.execute("""
+        SELECT word, SUM(count)
+        FROM words
+        GROUP BY word
+    """)
+    words = cursor.fetchall()
+
+    results = []
+
+    cursor.execute("""
+        SELECT word, SUM(count) as tf, COUNT(DISTINCT file_id) as df
+        FROM words
+        GROUP BY word
+    """)
+
+    rows = cursor.fetchall()
+
+    results = []
+    for word, tf, df in rows:
+        score = float(tf) * math.log(total_docs / (df or 1))
+        results.append((word, score))
+
+    results = sorted(results, key=lambda x: x[1], reverse=True)[:20]
+
+    cursor.close()
+    conn.close()
+
+    return jsonify(results)
+
+@app.route("/public/dna/<db>")
+def podcast_dna(db):
+    conn = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+    cursor = conn.cursor()
+
+    cursor.execute("""
+        SELECT 
+            AVG(mtld),
+            AVG(unique_words / total_words),
+            AVG(word_length)
+        FROM files f
+        JOIN words w ON f.id = w.file_id
+    """)
+
+    mtld, diversity, word_len = cursor.fetchone()
+
+    # Kategorien
+    cursor.execute("SELECT word, SUM(count) FROM words GROUP BY word")
+    words = cursor.fetchall()
+
+    cat_scores = {k: 0 for k in CATEGORIES}
+    for word, count in words:
+        for cat, keys in CATEGORIES.items():
+            if word in keys:
+                cat_scores[cat] += count
+    
+    cat_scores = normalize_dict(cat_scores)
+
+    cursor.close()
+    conn.close()
+
+    return jsonify({
+        "mtld": float(mtld or 0),
+        "diversity": float(diversity or 0),
+        "word_length": float(word_len or 0),
+        "categories": cat_scores
+    })
+
+@app.route("/public/tfidf_cross", methods=["POST"])
+def tfidf_cross():
+    selected_dbs = request.json.get("dbs", [])
+
+    if not selected_dbs:
+        return jsonify([])
+
+    conn = mysql.connector.connect(
+        host=DB_CONFIG["host"],
+        user=DB_CONFIG["user"],
+        password=DB_CONFIG["password"]
+    )
+    cursor = conn.cursor()
+
+    cursor.execute("SHOW DATABASES")
+    dbs = [d[0] for d in cursor.fetchall() if d[0] not in DB_BLACKLIST]
+
+    db_word_counts = {}
+    df_counts = {}
+    total_dbs = len(dbs)
+
+    # 🔹 Daten sammeln
+    for db in selected_dbs:
+        try:
+            c = mysql.connector.connect(**{**DB_CONFIG, "database": db})
+            cur = c.cursor()
+
+            cur.execute("""
+                SELECT word, SUM(count)
+                FROM words
+                GROUP BY word
+            """)
+
+            words = cur.fetchall()
+            db_word_counts[db] = dict(words)
+
+            # Document Frequency (über DBs)
+            for word, _ in words:
+                df_counts[word] = df_counts.get(word, 0) + 1
+
+            cur.close()
+            c.close()
+        except:
+            continue
+
+    # 🔥 TF-IDF berechnen
+    result = {}
+
+    for db, words in db_word_counts.items():
+        scores = []
+
+        for word, tf in words.items():
+            df = df_counts.get(word, 1)
+            score = float(tf) * math.log(total_dbs / df)
+
+            scores.append((word, score))
+
+        scores = sorted(scores, key=lambda x: x[1], reverse=True)[:20]
+        result[db] = scores
+
+    return jsonify(result)
+
 # === START ===
+
 if __name__ == "__main__":
     init_db_schema(CURRENT_DB)
     app.run(host="0.0.0.0", port=5000)
+
+if __name__ != '__main__':
+    gunicorn_logger = logging.getLogger('gunicorn.error')
+    app.logger.handlers = gunicorn_logger.handlers
+    app.logger.setLevel(gunicorn_logger.level)
