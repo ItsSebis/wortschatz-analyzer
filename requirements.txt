@@ -3,3 +3,4 @@ mysql-connector-python
 lexical-diversity
 nltk
 setuptools==81.0.0
+gunicorn

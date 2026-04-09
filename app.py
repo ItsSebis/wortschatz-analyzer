@@ -16,7 +16,7 @@ app = Flask(__name__)
 UPLOAD_FOLDER = "uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-CURRENT_DB = "sebi"
+CURRENT_DB = os.getenv("DB_NAME")
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
@@ -529,4 +529,4 @@ def list_db():
 # === START ===
 if __name__ == "__main__":
     init_db_schema(CURRENT_DB)
-    app.run
+    app.run(host="0.0.0.0", port=5000)
