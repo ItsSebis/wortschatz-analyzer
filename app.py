@@ -263,7 +263,7 @@ def clean_text(text):
     return text.strip()
 
 def import_youtube(url, mode="all"):
-    print(f"YouTube import {url} with mode {mode}")
+    app.logger.info(f"YouTube import {url} with mode {mode}")
 
     video_ids = []
     if mode == "latest":
