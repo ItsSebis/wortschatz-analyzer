@@ -24,12 +24,14 @@ import mysql.connector
 model = WhisperModel("base", compute_type="int8")
 
 app = Flask(__name__)
+
 UPLOAD_FOLDER = "/data/uploads"
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 DOWNLOAD_DIR = "/data/downloads/youtube"
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 CURRENT_DB = os.getenv("DB_NAME")
+IMPORT_RUNNING = 0
 
 DB_CONFIG = {
     "host": os.getenv("DB_HOST"),
@@ -682,8 +684,6 @@ def list_db():
         "current": CURRENT_DB,
         "databases": dbs
     })
-
-IMPORT_RUNNING = 0
 
 @app.route("/admin/youtube_import", methods=["POST"])
 def youtube_import():

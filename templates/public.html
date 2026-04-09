@@ -5,7 +5,11 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
         body { font-family: Arial; padding: 40px; }
-        .card { border:1px solid #ccc; padding:20px; margin:10px; }
+	#top { display: flex; }
+        #dbSelector {display: flex; width: 100%; flex-wrap: wrap; margin: 20px; justify-content: center}
+        .card { border:1px solid #ccc; padding:20px; margin:10px; width: min-content; }
+        .card p {width: max-content;}
+	#submitSelection { margin: 0 auto; font-size: 2rem; outline: none;}
     </style>
 </head>
 <body>
@@ -13,9 +17,14 @@
 <h1>📊 Podcast Analytics</h1>
 
 <h2>Datenbanken auswählen</h2>
+<div id="top">
 <div id="dbSelector"></div>
+<div id="level-graph">
+<img src="{{ url_for('static', filename='images/mtld-levels.png') }}" alt="MTLD-Levels">   
+</div>
+</div>
 
-<button onclick="applySelection()">Auswahl übernehmen</button>
+<button onclick="applySelection()" id="submitSelection">Auswahl übernehmen</button>
 
 <h2>Vergleich</h2>
 <canvas id="compareChart"></canvas>
@@ -46,6 +55,14 @@ function createChart(id, config) {
     charts[id] = new Chart(document.getElementById(id), config);
 }
 
+function updateOnClick() {
+    let boxes = document.getElementsByClassName("selectBox");
+
+    for (let box of boxes) { 
+	box.onclick = applySelection;
+    }
+}
+
 let selectedDBs = [];
 
 async function loadOverview() {
@@ -58,12 +75,13 @@ async function loadOverview() {
     data.forEach(d => {
         div.innerHTML += `
             <div  class="card"><label>
-                <input type="checkbox" value="${d.db}" checked>
+                <input class="selectBox" type="checkbox" value="${d.db}" checked>
                 ${d.db} (${d.files} Dateien) <br>
                 <p>Gesamt: ${d.total_words} Wörter | Einzeln: ${d.unique_words} Wörter</p>
             </label></div>
         `;
     });
+    updateOnClick();
 
     let selects = document.getElementsByClassName("dbSelect")
 
