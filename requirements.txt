@@ -1,6 +1,5 @@
 flask
 mysql-connector-python
 lexical-diversity
-re
 nltk
 setuptools==81.0.0
