@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "Spotify Transcript Exporter Pro",
+  "version": "2.0",
+  "permissions": ["activeTab", "scripting"],
+  "host_permissions": ["http://localhost:5000/*"],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://open.spotify.com/*"],
+      "js": ["content.js"]
+    }
+  ]
+}

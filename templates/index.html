@@ -1,0 +1,299 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Wortschatz Analyzer</title>
+    <style>
+        body { font-family: Arial; padding: 40px; }
+        #dropzone {
+            border: 2px dashed #aaa;
+            padding: 40px;
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        table {
+            border-collapse: collapse;
+            width: 100%;
+            margin-top: 20px;
+        }
+        th, td {
+            border: 1px solid #ccc;
+            padding: 8px;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+<h1>Dashboard</h1>
+
+<select id="dbSelect"></select>
+<button onclick="switchDB()">Wechseln</button>
+<button onclick="createDB()">Neu</button>
+<button onclick="deleteDB()">Löschen</button>
+
+<h3>Global Stats</h3>
+<div id="stats"></div>
+
+<h3>Upload</h3>
+<div id="dropzone">Dateien hier reinziehen</div>
+
+<h3>Dateien</h3>
+<table id="fileTable">
+    <thead>
+        <tr>
+            <th>Datei</th>
+            <th>Gesamt Wörter</th>
+            <th>Wortschatz</th>
+            <th>MTLD</th>
+            <th>Datum</th>
+	    <th>Aktionen</th>
+        </tr>
+    </thead>
+    <tbody></tbody>
+</table>
+
+<canvas id="filesChart"></canvas><br>
+<canvas id="tfidfChart"></canvas><br>
+<canvas id="lengthChart"></canvas>
+
+Oneclick results <a style="color:red;" href="#" onclick="document.getElementById('results').innerText = '';">Clear</a>:
+<button onclick="loadTopGlobal()">Top Wörter Global</button>
+<button onclick="loadAvgGlobal()">Ø Wortlänge Global</button>
+<pre id="results"></pre>
+
+<h3>Suche</h3>
+<input type="text" id="search" placeholder="Wort eingeben...">
+<button onclick="search()">Suchen</button>
+<table id="searchTable">
+    <thead>
+        <tr>
+            <th>Datei</th>
+            <th>Wort</th>
+            <th>Anzahl</th>
+            <th>Score</th>
+        </tr>
+    </thead>
+    <tbody></tbody>
+</table>
+
+<script>
+async function loadStats() {
+    let res = await fetch("/stats");
+    let data = await res.json();
+
+    document.getElementById("stats").innerHTML =
+        `Gesamt Wörter: ${data.total_words} | Wortschatz: ${data.unique_words} | TTR: ${data.ttr} | MTLD: ${data.mtld}`;
+}
+
+async function loadFiles() {
+    let res = await fetch("/files");
+    let data = await res.json();
+
+    let tbody = document.querySelector("#fileTable tbody");
+    tbody.innerHTML = "";
+
+    for (let f of data) {
+        let row = `<tr>
+            <td>${f.filename}</td>
+            <td>${f.total_words}</td>
+            <td>${f.unique_words}</td>
+            <td>${f.mtld}</td>
+            <td>${f.created_at}</td>
+            <td style="text-align:center">
+                <button onclick="deleteFile('${f.file_hash}')">🗑️</button>
+            </td>
+        </tr>`;
+        tbody.innerHTML += row;
+    }
+}
+
+const dropzone = document.getElementById("dropzone");
+
+dropzone.ondragover = e => e.preventDefault();
+
+dropzone.ondrop = async e => {
+    e.preventDefault();
+
+    let files = e.dataTransfer.files;
+    let formData = new FormData();
+
+    for (let f of files) {
+        formData.append("files", f);
+    }
+
+    await fetch("/upload", {
+        method: "POST",
+        body: formData
+    });
+
+    await loadFiles();
+    await loadStats();
+
+    alert("Upload fertig");
+};
+
+async function search() {
+    let word = document.getElementById("search").value;
+
+    let res = await fetch(`/search?word=${word}`);
+    let data = await res.json();
+
+    let tbody = document.querySelector("#searchTable tbody");
+    tbody.innerHTML = "";
+
+    for (let r of data) {
+        let row = `<tr>
+            <td>${r.filename}</td>
+            <td>${r.word}</td>
+            <td>${r.count}</td>
+            <td>${r.score?.toFixed(2) || "-"}</td>
+        </tr>`;
+        tbody.innerHTML += row;
+    }
+}
+
+async function loadTopGlobal() {
+    let res = await fetch("/top/global");
+    let data = await res.json();
+    document.getElementById("results").textContent =
+        JSON.stringify(data, null, 2);
+}
+
+async function loadAvgGlobal() {
+    let res = await fetch("/avg/global");
+    let data = await res.json();
+    document.getElementById("results").textContent =
+        JSON.stringify(data, null, 2);
+}
+
+async function deleteFile(hash) {
+    if (!confirm("Wirklich löschen?")) return;
+
+    await fetch(`/delete/${hash}`, {
+        method: "DELETE"
+    });
+
+    await loadFiles();
+    await loadStats();
+}
+
+async function loadFilesChart() {
+    let res = await fetch("/chart/files");
+    let data = await res.json();
+
+    const labels = data.map(d => d.filename);
+    const total = data.map(d => d.total_words);
+    const unique = data.map(d => d.unique_words);
+
+    new Chart(document.getElementById("filesChart"), {
+        type: "bar",
+        data: {
+            labels,
+            datasets: [
+                { label: "Gesamt Wörter", data: total },
+                { label: "Wortschatz", data: unique }
+            ]
+        }
+    });
+}
+
+async function loadTFIDF(filename) {
+    let res = await fetch(`/tfidf/${filename}`);
+    let data = await res.json();
+
+    const labels = data.map(d => d.word);
+    const scores = data.map(d => d.score);
+
+    new Chart(document.getElementById("tfidfChart"), {
+        type: "bar",
+        data: {
+            labels,
+            datasets: [{
+                label: "TF-IDF Score",
+                data: scores
+            }]
+        }
+    });
+}
+
+async function loadWordLength(filename) {
+    let res = await fetch(`/chart/wordlength/${filename}`);
+    let data = await res.json();
+
+    const labels = data.map(d => d[0]);
+    const values = data.map(d => d[1]);
+
+    new Chart(document.getElementById("lengthChart"), {
+        type: "bar",
+        data: {
+            labels,
+            datasets: [{
+                label: "Wortlänge",
+                data: values
+            }]
+        }
+    });
+}
+
+async function loadDBs() {
+    let res = await fetch("/db/list");
+    let data = await res.json();
+
+    let select = document.getElementById("dbSelect");
+    select.innerHTML = "";
+
+    data.databases.forEach(db => {
+        let selected = db === data.current ? "selected" : "";
+        select.innerHTML += `<option ${selected}>${db}</option>`;
+    });
+}
+
+async function switchDB() {
+    let db = document.getElementById("dbSelect").value;
+
+    await fetch("/db/switch", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({db})
+    });
+
+    await loadFiles();
+    await loadStats();
+}
+
+async function createDB() {
+    let name = prompt("DB Name:");
+    if (!name) return;
+
+    await fetch("/db/create", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({db: name})
+    });
+
+    loadDBs();
+}
+
+async function deleteDB() {
+    let db = document.getElementById("dbSelect").value;
+
+    if (!confirm("DB wirklich löschen?")) return;
+
+    await fetch("/db/delete", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({db})
+    });
+
+    loadDBs();
+}
+
+// initial load
+loadDBs();
+loadFiles();
+loadStats();
+loadFilesChart();
+</script>
+
+</body>
+</html>
