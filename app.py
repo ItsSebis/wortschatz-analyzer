@@ -119,10 +119,14 @@ def save_to_db(file_hash, filename, counts, total, unique, mtld, db=CURRENT_DB):
     cursor.close()
     conn.close()
 
-def process_file(filepath, db=CURRENT_DB):
+def process_file(filepath, db="NONE"):
+    global CURRENT_DB
+    if db == "NONE":
+        db = CURRENT_DB
     with open(filepath, "r", encoding="utf-8") as f:
         text = f.read()
 
+        app.logger.info(f)
     counts, total, unique, mtld = process_text(text)
     file_hash = hash_file(filepath)
     filename = os.path.basename(filepath)
@@ -270,6 +274,7 @@ def clean_text(text):
     return text.strip()
 
 def import_youtube(url, mode="all", db=CURRENT_DB):
+    global IMPORT_RUNNING
     app.logger.info(f"Start YouTube import {url} with mode {mode}")
 
     video_ids = []
@@ -286,7 +291,9 @@ def import_youtube(url, mode="all", db=CURRENT_DB):
 
         try:
             audio = download_audio(vid)
+            app.logger.info("Transcribing " + meta["channel"])
             text = transcribe(audio)
+            app.logger.info("Transcribed " + meta["channel"])
             text = clean_text(text)
             path = UPLOAD_FOLDER+"/"+meta["channel"] + " - " + meta["title"] +".txt"
 
@@ -302,7 +309,7 @@ def import_youtube(url, mode="all", db=CURRENT_DB):
         except Exception as e:
             print(f"Error with {vid}:", e)
 
-        app.logger.info("Finished " + meta["title"])
+        app.logger.info("======== Finished " + meta["title"] + " ========")
     IMPORT_RUNNING -= 1
 
 # === ROUTES ===
@@ -313,6 +320,7 @@ def index():
 
 @app.route("/upload", methods=["POST"])
 def upload():
+    global CURRENT_DB
     files = request.files.getlist("files")
 
     paths = []
@@ -328,16 +336,19 @@ def upload():
 
 @app.route('/uploadExtension', methods=['POST'])
 def uploadExtension():
+    global CURRENT_DB, UPLOAD_FOLDER
     file = request.files.get('file')
 
     if not file:
         return "No file", 400
 
-    content = file.read().decode('utf-8', errors='ignore')
+    #content = file.read().decode('utf-8', errors='ignore')
+
+    app.logger.info(file)
 
     path = os.path.join(UPLOAD_FOLDER, file.filename)
     file.save(path)
-    process_file(path)
+    process_file(path, CURRENT_DB)
 
     return "OK"
 

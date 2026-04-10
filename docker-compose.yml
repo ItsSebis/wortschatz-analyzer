@@ -3,6 +3,14 @@ version: "3.9"
 services:
   app:
     image: itssebis/wortschatz-analyzer:latest
+    deploy:
+      resources:
+        limits:
+          cpus: '6'    # Maximum 0.5 CPU cores
+          memory: 8192M    # Maximum 512MB RAM
+        reservations:
+          cpus: '2'    # Guaranteed 0.25 CPU cores
+          memory: 1024M    # Guaranteed 256MB RAM
     container_name: wortschatz_app
     develop:
       watch:
@@ -14,7 +22,7 @@ services:
     expose:
       - "5000"
     volumes:
-      - /data:/mnt/test/admin/data
+      - /mnt/test/admin/data:/data
 
   nginx:
     image: nginx:latest

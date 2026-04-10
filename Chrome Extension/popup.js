@@ -7,7 +7,7 @@ document.getElementById("extract").addEventListener("click", async () => {
 
     const text = response.text;
     const filename = response.title + ".txt";
-
+    console.log(text)
     // 👉 TEXT → FILE
     const blob = new Blob([text], { type: "text/plain" });
     const file = new File([blob], filename);
@@ -16,7 +16,7 @@ document.getElementById("extract").addEventListener("click", async () => {
     formData.append("file", file);
 
     try {
-        await fetch("http://10.5.1.11:8081/uploadExtension", {
+        await fetch("http://localhost:8081/uploadExtension", {
             method: "POST",
             body: formData
         });
