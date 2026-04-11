@@ -73,10 +73,14 @@ async function loadOverview() {
     div.innerHTML = "";
 
     data.forEach(d => {
+        let tokenPerFile = 0
+        if (d.files > 0) {
+            tokenPerFile = Math.round(d.total_words / d.files)
+        }
         div.innerHTML += `
             <div  class="card"><label>
                 <input class="selectBox" type="checkbox" value="${d.db}" checked>
-                ${d.db} (${d.files} Dateien) <br>
+                ${d.db} (${d.files} Dateien, ${tokenPerFile} W/Datei) <br>
                 <p>Gesamt: ${d.total_words} Wörter | Einzeln: ${d.unique_words} Wörter</p>
             </label></div>
         `;
